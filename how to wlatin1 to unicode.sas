@@ -3,21 +3,21 @@ This snippet is used for web2sas reports in order to correctly display the chara
 
 
 WLATIN1
-�     C4
-�     D6
-�     DC
-�     E4
-�     F6
-�     FC
-�     DF
+Ä     C4
+Ö     D6
+Ü     DC
+ä     E4
+ö     F6
+ü     FC
+ß     DF
 UNICODE
-Ä    C384
-Ö    C396
-Ü    C39C
-ä    C3A4
-ö    C3B6
-ü    C3BC
-ß    C39F
+Ã„    C384
+Ã–    C396
+Ãœ    C39C
+Ã¤    C3A4
+Ã¶    C3B6
+Ã¼    C3BC
+ÃŸ    C39F
 
 array _cvars $ _character_;
 
