@@ -1,0 +1,212 @@
+
+***   Initialize STREAM.                                         ***;
+%stream_init;
+
+***  add MDBASEFL to ADSL                                      ***;
+proc sql;
+	create table __adsl as
+	select l.*,r.avalc as mdbasefl
+	from ovad.adsl as l left join (select distinct usubjid,avalc from ovad.adsub where paramcd='MDBASEFL') as r
+	on l.usubjid=r.usubjid;
+quit;
+
+***   Apply filters to ADSL                                    ***;
+%str_tlg_applyfilters(dsin = __adsl,
+                      target = slref,
+                      dsout = adsl);
+
+***   Apply filters to ADTR                                    ***;
+%str_tlg_applyfilters(dsin = ovad.adtr(where=(PARAMCD = "SD")) ,
+                      target = anl,
+                      dsout = sld);
+
+***   Apply filters to ADRS.                                     ***;
+%str_tlg_applyfilters(dsin = ovad.adrs(where=(PARAMCD="BOR" and AVALC ne " ")),
+                      target = anl,
+                      dsout = adrs);
+                      
+*** Add PT variable to ADSL ***;
+data adsl;
+	set adsl;
+	PT = scan(USUBJID, 3, '-');
+run;
+
+
+*** Retreive Best Overall Response by Investigator ***;
+data bor(keep = USUBJID OVRSPINP);
+    set adrs (rename = (AVALC = OVRSPINP));
+    by USUBJID;
+    if first.USUBJID;
+run;
+
+*** Set x-axis to either day or weeks ***;
+data sld;
+	set sld;
+	*weeks;
+	if ady ne . then
+		ady=ady/7;
+run;		
+
+***   Merge ADSL with best change in SLD, best overall response    ***;
+data __plotdata;
+    merge adsl(in = insl keep = USUBJID PT EOSSTT)
+          sld(in = insld keep = USUBJID PCHG ADY AVISITN)
+          bor(in = inbor);
+    by USUBJID;
+    if insl and insld /*and inbor*/;
+    
+    if upcase(eosstt)='ONGOING' then
+    	eosstt='Ong';
+    else if upcase(eosstt)='DISCONTINUED' then
+    	eosstt='Dis';
+    
+    if AVISITN = 0 then do;
+        PCHG = 0;
+        ADY = 0;
+    end;   
+    
+    if not (first.USUBJID and last.USUBJID); /* Filter patients with only baseline measurement */
+    if not missing(PCHG);
+    
+    OVRSPINP = coalescec(OVRSPINP, "N/A");    
+run;
+
+
+%let prod = %qsysfunc(lowcase(%qsysfunc(compress(%bquote(&__suffix.),%str("_") ))));
+%let prod = %qsysfunc(cat(gefsp, &prod., results));
+
+*** Add information of new lesion *** ;
+proc sql;
+	create table orep.&prod. as
+	select l.*,r.new_les
+	from __plotdata as l left join (select distinct usubjid,avalc,visitnum,case when avalc='Y' then 'x' else '' end as new_les from ovad.adtr where paramcd='TUMSTATE' and avalc='Y') as r
+	on l.usubjid=r.usubjid and l.avisitn=r.visitnum;
+quit;
+
+***   Initialize GTL annotate macros.                            ***;
+%sganno;
+
+proc sort data=orep.&prod.;
+    by PT ADY ;
+run;
+
+data annods;
+    set orep.&prod.;
+    by PT ADY ;
+    if last.PT then do;
+        %sgtext(label = EOSSTT,
+                x1 = ADY,
+                y1 = PCHG,
+                anchor = "BOTTOMLEFT",
+                width = 4,
+                drawspace = "datavalue",
+                textfont = "symbol",
+                textcolor = "black",
+                textsize=6,
+                id = "eos",
+                reset = "all"
+        );
+		%sgtext(label = NEW_LES,
+            x1 = ADY,
+            y1 = PCHG,
+            anchor = "TOPLEFT",
+            width = 4,
+            drawspace = "datavalue",
+            textfont = "symbol",
+            textcolor = "black",
+            textsize=6,
+            id = "new_les",
+            reset = "all"
+    	);        
+    end;
+run;
+
+%str_tlg_titles(splitwidth=)
+
+%str_tlg_footnotes( doctype      = pdf,
+                    wrapfoot     = N)
+
+%str_tlg_odsopen(doctype = pdf);
+
+title;
+footnote;
+
+proc template;
+    define statgraph spiderplot;
+        begingraph;
+            %macro titles;
+                %do i = 1 %to &__str_nrtitles;
+                    entrytitle halign = LEFT
+                    %unquote(%str_tlg_gettextitem(%superq(__str_title&i), style = missing))
+                        / pad = 0;
+                %end;
+            %mend titles;
+            %titles;
+
+            /* Define the attribute map*/
+            discreteattrmap name="respclr" / trimleading=true ignorecase=true /*discretelegendentrypolicy=attrmap*/;
+                value "CR"            / markerattrs=(color=orange)    lineattrs=(color=orange);
+                value "PR"            / markerattrs=(color=green)     lineattrs=(color=green);
+                value "SD"            / markerattrs=(color=yellow)   lineattrs=(color=yellow); 
+                value "NON-CR/NON-PD" / markerattrs=(color=purple)   lineattrs=(color=purple); 
+                value "PD"            / markerattrs=(color=red)      lineattrs=(color=red); 
+                value "NE"            / markerattrs=(color=gray)     lineattrs=(color=gray); 
+                value "N/A"           / markerattrs=(color=gray)     lineattrs=(color=gray); 
+            enddiscreteattrmap;
+
+            discreteattrvar attrvar=dattrrsp var=OVRSPINP attrmap="respclr";
+
+
+            layout overlay / walldisplay =none
+                             xaxisopts = (offsetmin = 0.03 
+                                          offsetmax = 0.05
+                                          label = "Weeks")
+
+                             yaxisopts = (offsetmax = 0.03
+                                          label = "Change in Target Lesions (SOD) from Baseline (%)"
+                                          linearopts = (viewmin=-100 viewmax=100 tickvaluesequence=(start=-100 end=100 increment=10))
+                                          griddisplay = off);
+                                 
+               /* annotate / id = "patids";*/
+                annotate / id = "eos";
+                annotate / id = "new_les";
+                
+                seriesplot x = ADY y = PCHG /
+                    group = PT
+                    name = "series"
+                    linecolorgroup = dattrrsp
+                    lineattrs = (thickness=2 pattern=solid)
+
+                ;
+                scatterplot x = ADY y = PCHG /
+                    group = dattrrsp
+                    name = "scatter"
+                    markerattrs = (symbol=circlefilled size=5)
+                ;
+                              
+                referenceline y = 0 / lineattrs = (pattern=shortdash color=gray);
+                
+                discretelegend "scatter" /
+                    title = "Best Overall Response"
+                    location = OUTSIDE
+                    border = FALSE
+                    titleattrs = (size = 9pt)
+                    valueattrs = (size = 9pt)
+                    halign = CENTER
+                    valign = BOTTOM
+                    exclude = (" ")
+                ;
+
+            endlayout;
+      
+            %str_tlg_printfootnote(statement = entryfootnote);
+        endgraph;
+    end;
+run;
+
+proc sgrender data = orep.&prod. 
+              template = spiderplot 
+              sganno   = annods;
+run;
+        
+%str_tlg_odsclose(doctype = pdf);  
