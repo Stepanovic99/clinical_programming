@@ -1,0 +1,178 @@
+
+***  add MDBASEFL to ADSL                                      ***;
+proc sql;
+	create table __adsl as
+	select l.*,r.avalc as mdbasefl
+	from ovad.adsl as l left join (select distinct usubjid,avalc from ovad.adsub where paramcd='MDBASEFL') as r
+	on l.usubjid=r.usubjid;
+quit;
+
+***   Apply filters to ADSL                                    ***;
+%str_tlg_applyfilters(dsin = __adsl,
+                      target = slref,
+                      dsout = adsl);
+
+***   Apply filters to ADTR                                    ***;
+%str_tlg_applyfilters(dsin = ovad.adtr(where=(PARAMCD = "SD" and not missing(PCHG))) ,
+                      target = anl,
+                      dsout = sld);
+
+***   Apply filters to ADRS.                                     ***;
+%str_tlg_applyfilters(dsin = ovad.adrs(where=(PARAMCD="BOR" and AVALC ne " ")),
+                      target = anl,
+                      dsout = adrs);
+                      
+*** Retreive Best Overall Response by Investigator ***;
+data ars01(keep= USUBJID OVRSPINP);
+    set adrs (rename = (AVALC = OVRSPINP));
+    by USUBJID;
+    if first.USUBJID;
+run;
+
+proc sort data=ars01;
+    by USUBJID;
+run;
+
+*** Retreive non-missing Best % Change in SPD from Baseline***;
+data best_sld(keep= USUBJID PCHG);
+    set sld;
+    where PCHG ne . and ABLFL ne "Y";
+run;
+proc sort data=best_sld;
+    by USUBJID PCHG;
+run;
+data best_sld;
+    set best_sld;
+    by USUBJID PCHG;
+    if first.USUBJID;
+run;
+
+*** Retreive CEACAM5 at baseline ***;
+
+
+%let prod = %qsysfunc(lowcase(%qsysfunc(compress(%bquote(&__suffix.),%str("_") ))));
+%let prod = %qsysfunc(cat(gefwf, &prod., results));
+
+***   Merge ADSL with best change in SLD, best overall response    ***;
+data orep.&prod.;
+    merge adsl(in = insl)
+          best_sld(in = insld)
+          ars01(in = inrs);
+    by USUBJID;
+    
+    length pchg_c patnum $10;
+    
+    if insl and insld /*and inrs*/;
+    OVRSPINP = coalescec(OVRSPINP, "N/A");
+    
+    patnum=scan(USUBJID, 3, "-");    
+
+    pchg_c=strip(put(round(pchg,.01),8.2));
+    
+    *position of percentages;
+    if pchg le 0 then 
+    	pos_pchg=pchg-10;
+    else if pchg gt 0 then 
+    	pos_pchg=pchg+10;    	
+    
+    keep studyid usubjid trt01a ovrspinp pchg pchg_c patnum pos_pchg;
+run;
+
+
+*** Sort plot by best % change in SLD decreasing from left to right ***;
+proc sort data=orep.&prod.;
+    by descending PCHG PATNUM;
+run;
+
+/* Retrieving min-max ranges */
+/*proc sql noprint;
+    select sign(min(PCHG)) * ceil((abs(min(PCHG)) + 1) / 10) * 10  into :__min
+    from plotdata;
+    select sign(max(PCHG)) * ceil((abs(max(PCHG)) + 1) / 10) * 10   into :__max
+    from plotdata;
+quit;*/
+
+
+%str_tlg_titles(splitwidth=)
+
+%str_tlg_footnotes( doctype      = pdf,
+                    wrapfoot     = N)
+
+%str_tlg_odsopen(doctype = pdf);
+
+title;
+footnote;
+
+proc template;
+    define statgraph waterfallchart;
+        begingraph;
+            %macro titles;
+                %do i = 1 %to &__str_nrtitles;
+                    entrytitle halign = left
+                    %unquote(%str_tlg_gettextitem(%superq(__str_title&i), style = missing))
+                        / pad = 0;
+                %end;
+            %mend titles;
+            %titles;
+            
+            /* Define the attribute map*/
+            discreteattrmap name="respclr" / trimleading=true ignorecase=true /*discretelegendentrypolicy=attrmap*/;
+                value "CR"            / fillattrs=(color=orange)   lineattrs=(color=orange);
+                value "PR"            / fillattrs=(color=green)     lineattrs=(color=green);
+                value "SD"            / fillattrs=(color=yellow)   lineattrs=(color=yellow); 
+                value "NON-CR/NON-PD" / fillattrs=(color=purple)   lineattrs=(color=purple); 
+                value "PD"            / fillattrs=(color=red)      lineattrs=(color=red); 
+                value "NE"            / fillattrs=(color=gray)     lineattrs=(color=gray); 
+                value "N/A"           / fillattrs=(color=gray)     lineattrs=(color=gray);
+            enddiscreteattrmap;
+
+            discreteattrvar attrvar=dattrrsp var=OVRSPINP attrmap="respclr";
+                  
+            layout overlay / walldisplay =none
+                             xaxisopts = (offsetmin = 0.06
+                                          offsetmax = 0.06
+                                          label = "Patient"
+                                          griddisplay=on
+                                          discreteopts = (tickvaluefitpolicy = ROTATEALWAYS tickvaluerotation = DIAGONAL))
+
+                             yaxisopts = (offsetmax = 0.025
+                                          label = "Best Change in (SOD) from Baseline (%)"
+                                          linearopts = (viewmin=-110 viewmax=80 tickvaluesequence=(start=-200 end=200 increment=20))
+                                          griddisplay = off);
+                                                                                 
+                                 
+                barchart category = eval(patnum) response = PCHG /
+                    group = dattrrsp
+                    name = "waterfall"
+                    stat = MEAN
+                ;
+                
+                textplot x=eval(patnum) y=pos_pchg text=pchg_c / rotate=90 textattrs=(size=7) ;
+                
+                Referenceline y=-30/lineattrs=(thickness=1px pattern=34 color=cx000000 ) ;
+                Referenceline y=20/lineattrs=(thickness=1px pattern=34 color=cx000000 ) ;
+              
+                discretelegend "waterfall" /
+                    title = "Best Overall Response"
+                    location = OUTSIDE
+                    border = FALSE
+                    titleattrs = (size = 9pt)
+                    valueattrs = (size = 9pt)
+                    halign = CENTER
+                    valign = BOTTOM               
+                    exclude = (" ")
+                ;
+        
+            endlayout;
+      
+            %str_tlg_printfootnote(statement = entryfootnote);
+        endgraph;
+    end;
+run;
+
+proc sgrender data = orep.&prod. 
+              template = waterfallchart;
+run;
+
+
+%str_tlg_odsclose(doctype = pdf);        
