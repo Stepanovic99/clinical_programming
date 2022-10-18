@@ -1,0 +1,48 @@
+*marco to truncate the length of variables to the maximum length of a value;
+%macro truncate_length(__dataset=);
+
+    data &__dataset.;
+        set &__dataset.;
+        array chars {*} _character_;
+        do i=1 to dim(chars);
+           chars{i} = strip(chars{i});
+        end;
+        drop i;
+    run;
+
+    proc contents 
+        noprint
+        data = &__dataset. 
+        out=__cont_&__dataset.;
+    run;
+
+    *create dataset with max length per character variable;
+    data _null_;
+        set __cont_&__dataset. end=eof;
+        where type=2;
+        if _N_=1 then do;
+            call execute("proc sql noprint;");
+            call execute("    create table __length_&__dataset. as select '&__dataset.' as __domain");
+        end;
+        call execute(",'"||strip(name)||"' as name_"||strip(put(_N_,best.))||", max(length("||strip(name)||")) as length_"||strip(put(_N_,best.)));
+        if eof then do;
+            call execute("from &__dataset.; quit;");
+            call symput("N_vars_&__dataset.",strip(put(_N_,best.)));
+        end;
+    run;
+
+    *assigne max length to each variable;
+    options varlenchk=nowarn;
+    data _null_;
+        set __length_&__dataset. end=eof;
+        array xxname   name_1  -name_&&N_vars_&__dataset.;
+        array xxlength length_1-length_&&N_vars_&__dataset.;
+        call execute("data &__dataset.; length ");
+        do i=1 to &&N_vars_&__dataset.;
+            call execute(xxname[i]||' $'||strip(put(xxlength[i],best.)));
+        end;
+        call execute(";set &__dataset.; run;");
+    run;
+    options varlenchk=warn;
+
+%mend truncate_length;
