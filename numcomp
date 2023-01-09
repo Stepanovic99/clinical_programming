@@ -1,0 +1,18 @@
+
+%macro numcomp(val1, operator, val2, rou ) ;
+
+%local ROUND1 ROUND2 ;
+
+%if &rou ne %then %do ;
+  %let round1 = round ;
+  %let round2 = ,&rou ;
+%end;
+
+%else %do ;
+  %let round1 = ;
+  %let round2 = ;
+%end ;
+
+&round1(input(put(&val1,best32.),best32.)&round2) &operator &round1(input(put(&val2,best32.),best32.)&round2)
+
+%mend numcomp;
